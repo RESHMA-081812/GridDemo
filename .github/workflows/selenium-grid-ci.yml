@@ -1,0 +1,123 @@
+name: Selenium Grid CI
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+    inputs:
+      gridUrl:
+        description: 'Selenium Grid Hub URL (e.g., http://10.0.0.12:4444)'
+        required: false
+        default: ''
+      browsers:
+        description: 'Comma-separated browsers to run (chrome,firefox)'
+        required: false
+        default: 'chrome,firefox'
+      headless:
+        description: 'Run headless (true/false)'
+        required: false
+        default: 'true'
+      suiteFile:
+        description: 'TestNG suite file path (e.g., testng.xml)'
+        required: false
+        default: 'testng.xml'
+
+jobs:
+  test:
+    # You can switch to windows-latest or macos-latest if needed
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [ chrome, firefox ]
+
+    env:
+      # Resolve inputs with sensible defaults
+      GRID_URL: ${{ inputs.gridUrl != '' && inputs.gridUrl || vars.GRID_URL || '' }}
+      SELENIUM_HEADLESS: ${{ inputs.headless != '' && inputs.headless || 'true' }}
+      SUITE_FILE: ${{ inputs.suiteFile != '' && inputs.suiteFile || 'testng.xml' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Show Java & Maven versions
+        run: |
+          java -version
+          mvn -v
+
+      # Chrome/Firefox are available on ubuntu-latest runners.
+      # Install Xvfb for headless display (good practice)
+      - name: Install dependencies for headless
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          which google-chrome || true
+          google-chrome --version || true
+          firefox --version || true
+
+      - name: Run TestNG on Selenium Grid - ${{ matrix.browser }}
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: |
+          # If you want to store GRID_URL in GitHub Environments/Variables or Secrets:
+          #   Repo Settings → Secrets and variables → Actions → Variables → GRID_URL
+          # Or pass it via workflow_dispatch input.
+
+          # Resolve grid value: prefer input/env GRID_URL; fallback to local (no Grid)
+          GRID="${GRID_URL:-local}"
+
+          echo "Grid URL: $GRID"
+          echo "Browser: ${BROWSER}"
+          echo "Headless: ${SELENIUM_HEADLESS}"
+          echo "Suite file: ${SUITE_FILE}"
+
+          # If you are NOT using testng.xml parameters and rely on -D props, this is enough:
+          mvn -B -U clean test \
+            -DsuiteFile="${SUITE_FILE}" \
+            -Dselenium.browser="${BROWSER}" \
+            -Dselenium.gridUrl="${GRID}" \
+            -Dselenium.headless="${SELENIUM_HEADLESS}"
+
+      - name: Upload Surefire/TestNG XML reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.browser }}
+          path: |
+            target/surefire-reports/**
+            target/testng-results.xml
+          if-no-files-found: warn
+
+      - name: Upload screenshots & logs (if your tests save them)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.browser }}
+          path: |
+            target/screenshots/**
+            target/logs/**
+          if-no-files-found: ignore
+
+      # Optional: generate Surefire HTML and upload (requires maven-surefire-report-plugin)
+      - name: Generate Surefire HTML report
+        if: always()
+        run: mvn -B surefire-report:report || true
+
+      - name: Upload Surefire HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-html-${{ matrix.browser }}
+          path: target/site/surefire-report.html
+          if-no-files-found: warn
