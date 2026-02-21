@@ -1,0 +1,101 @@
+name: Selenium Grid - TestNG
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  ui-tests:
+    name: Test on ${{ matrix.browser }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - browser: chrome
+            service: selenium-chrome
+            grid_url: http://selenium-chrome:4444/
+            image: selenium/standalone-chrome:latest
+          - browser: firefox
+            service: selenium-firefox
+            grid_url: http://selenium-firefox:4444/
+            image: selenium/standalone-firefox:latest
+
+    services:
+      selenium-chrome:
+        image: selenium/standalone-chrome:latest
+        options: >-
+          --shm-size=2g
+        ports:
+          - 4444:4444
+        env:
+          SE_NODE_MAX_SESSIONS: 1
+          SE_SESSION_REQUEST_TIMEOUT: 300
+
+      selenium-firefox:
+        image: selenium/standalone-firefox:latest
+        options: >-
+          --shm-size=2g
+        ports:
+          # Map container's 4444 to host 4445 to avoid port conflict
+          - 4445:4444
+        env:
+          SE_NODE_MAX_SESSIONS: 1
+          SE_SESSION_REQUEST_TIMEOUT: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Verify Java & Maven
+        run: |
+          java -version
+          mvn -v
+
+      - name: Wait for Selenium to be ready
+        run: |
+          URL="${{ matrix.grid_url }}"
+          echo "Waiting for Selenium at $URL..."
+          for i in {1..40}; do
+            if curl -fsS "${URL}status" | jq -e '.value.ready' >/dev/null 2>&1; then
+              echo "Selenium is ready."
+              exit 0
+            fi
+            echo "Not ready yet ($i/40)."
+            sleep 2
+          done
+          echo "Timed out waiting for Selenium."
+          curl -fsS "${URL}status" || true
+          exit 1
+
+      - name: Run TestNG suite
+        env:
+          BROWSER: ${{ matrix.browser }}
+          GRID_URL: ${{ matrix.grid_url }}
+        run: |
+          # If your testng.xml is at repo root and referenced in surefire,
+          # these system properties will be picked up by TestNG parameters.
+          mvn -B -e test \
+            -Dbrowser="${BROWSER}" \
+            -DgridUrl="${GRID_URL}"
+
+      - name: Upload Surefire Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.browser }}
+          path: |
+            **/target/surefire-reports/**
+          if-no-files-found: warn
+          retention-days: 14
